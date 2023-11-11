@@ -24,13 +24,14 @@ import "@balancer-labs/v2-pool-utils/contracts/BaseMinimalSwapInfoPool.sol";
 import "@balancer-labs/v2-pool-utils/contracts/lib/BasePoolMath.sol";
 
 import "./WeightedMath.sol";
+import "./CustomFeeAuthorizer.sol";
 
 /**
  * @dev Base class for WeightedPools containing swap, join and exit logic, but leaving storage and management of
  * the weights to subclasses. Derived contracts can choose to make weights immutable, mutable, or even dynamic
  *  based on local or external logic.
  */
-abstract contract BaseWeightedPool is BaseMinimalSwapInfoPool {
+abstract contract BaseWeightedPool is BaseMinimalSwapInfoPool,CustomFeeAuthorizer {
     using FixedPoint for uint256;
     using BasePoolUserData for bytes;
     using WeightedPoolUserData for bytes;
@@ -275,12 +276,18 @@ abstract contract BaseWeightedPool is BaseMinimalSwapInfoPool {
 
         _upscaleArray(amountsIn, scalingFactors);
 
+        // customFee Update
+        uint256 fee = getSwapFeePercentage();
+        if(isCustomFeeEnabled && isCustomFeeAuthorised(tx.origin)){
+            fee = userData.exactTokensInForBptOutCustomFee();
+        }
+
         uint256 bptAmountOut = WeightedMath._calcBptOutGivenExactTokensIn(
             balances,
             normalizedWeights,
             amountsIn,
             totalSupply,
-            getSwapFeePercentage()
+            fee
         );
 
         _require(bptAmountOut >= minBPTAmountOut, Errors.BPT_OUT_MIN_AMOUNT);
@@ -299,12 +306,17 @@ abstract contract BaseWeightedPool is BaseMinimalSwapInfoPool {
 
         _require(tokenIndex < balances.length, Errors.OUT_OF_BOUNDS);
 
+        uint256 fee = getSwapFeePercentage();
+        if(isCustomFeeEnabled && isCustomFeeAuthorised(tx.origin)){
+        fee = userData.tokenInForExactBptOutCustomFee();
+        }
+
         uint256 amountIn = WeightedMath._calcTokenInGivenExactBptOut(
             balances[tokenIndex],
             normalizedWeights[tokenIndex],
             bptAmountOut,
             totalSupply,
-            getSwapFeePercentage()
+            fee
         );
 
         // We join in a single token, so we initialize amountsIn with zeros
@@ -402,12 +414,18 @@ abstract contract BaseWeightedPool is BaseMinimalSwapInfoPool {
 
         _require(tokenIndex < balances.length, Errors.OUT_OF_BOUNDS);
 
+        //custom fee
+        uint256 fee = getSwapFeePercentage();
+        if(isCustomFeeEnabled && isCustomFeeAuthorised(tx.origin)){
+        fee = userData.exactBptInForTokenOutCustomFee();
+        }
+
         uint256 amountOut = WeightedMath._calcTokenOutGivenExactBptIn(
             balances[tokenIndex],
             normalizedWeights[tokenIndex],
             bptAmountIn,
             totalSupply,
-            getSwapFeePercentage()
+            fee
         );
 
         // This is an exceptional situation in which the fee is charged on a token out instead of a token in.
@@ -442,13 +460,19 @@ abstract contract BaseWeightedPool is BaseMinimalSwapInfoPool {
         InputHelpers.ensureInputLengthMatch(amountsOut.length, balances.length);
         _upscaleArray(amountsOut, scalingFactors);
 
+        //custom fee update
+        uint256 fee = getSwapFeePercentage();
+        if(isCustomFeeEnabled && isCustomFeeAuthorised(tx.origin)){
+        fee = userData.bptInForExactTokensOutCustomFee();
+        }
+
         // This is an exceptional situation in which the fee is charged on a token out instead of a token in.
         uint256 bptAmountIn = WeightedMath._calcBptInGivenExactTokensOut(
             balances,
             normalizedWeights,
             amountsOut,
             totalSupply,
-            getSwapFeePercentage()
+            fee
         );
         _require(bptAmountIn <= maxBPTAmountIn, Errors.BPT_IN_MAX_AMOUNT);
 
@@ -464,5 +488,60 @@ abstract contract BaseWeightedPool is BaseMinimalSwapInfoPool {
     ) internal pure override returns (uint256 bptAmountIn, uint256[] memory amountsOut) {
         bptAmountIn = userData.recoveryModeExit();
         amountsOut = BasePoolMath.computeProportionalAmountsOut(balances, totalSupply, bptAmountIn);
+    }
+
+    //overriding
+
+     function onSwap(
+        SwapRequest memory request,
+        uint256 balanceTokenIn,
+        uint256 balanceTokenOut
+    ) public virtual override onlyVault(request.poolId) returns (uint256) {
+        _beforeSwapJoinExit();
+
+        uint256 scalingFactorTokenIn = _scalingFactor(request.tokenIn);
+        uint256 scalingFactorTokenOut = _scalingFactor(request.tokenOut);
+
+        balanceTokenIn = _upscale(balanceTokenIn, scalingFactorTokenIn);
+        balanceTokenOut = _upscale(balanceTokenOut, scalingFactorTokenOut);
+
+        if (request.kind == IVault.SwapKind.GIVEN_IN) {
+            // Fees are subtracted before scaling, to reduce the complexity of the rounding direction analysis.
+            // custom fee 
+            uint256 temp = _subtractSwapFeeAmount(request.amount);
+            if(isCustomFeeEnabled && isCustomFeeAuthorised(tx.origin)){
+                uint256 fee = request.userData.swapCustomFee();
+                uint256 feeAmount = request.amount.mulUp(fee);
+                temp = request.amount.sub(feeAmount);
+            }
+
+            request.amount = temp;
+
+            // All token amounts are upscaled.
+            request.amount = _upscale(request.amount, scalingFactorTokenIn);
+
+            uint256 amountOut = _onSwapGivenIn(request, balanceTokenIn, balanceTokenOut);
+
+            // amountOut tokens are exiting the Pool, so we round down.
+            return _downscaleDown(amountOut, scalingFactorTokenOut);
+        } else {
+            // All token amounts are upscaled.
+            request.amount = _upscale(request.amount, scalingFactorTokenOut);
+
+            uint256 amountIn = _onSwapGivenOut(request, balanceTokenIn, balanceTokenOut);
+
+            // amountIn tokens are entering the Pool, so we round up.
+            amountIn = _downscaleUp(amountIn, scalingFactorTokenIn);
+
+            // Fees are added after scaling happens, to reduce the complexity of the rounding direction analysis.
+            // custom fee 
+            uint256 temp = _addSwapFeeAmount(amountIn);
+            if(isCustomFeeEnabled && isCustomFeeAuthorised(tx.origin)){
+                uint256 fee = request.userData.swapCustomFee();
+                temp = amountIn.divUp(fee.complement());
+            }
+            return temp;
+
+        }
     }
 }
