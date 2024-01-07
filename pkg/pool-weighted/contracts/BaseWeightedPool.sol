@@ -225,6 +225,15 @@ abstract contract BaseWeightedPool is BaseMinimalSwapInfoPool {
             userData
         );
 
+        // _doJoin performs actions specific to type of join
+        // but it's a view function so can not emit event
+
+        WeightedPoolUserData.JoinKind kind = userData.joinKind();
+        if(kind == WeightedPoolUserData.JoinKind.EXACT_TOKENS_IN_FOR_BPT_OUT ||
+         kind == WeightedPoolUserData.JoinKind.TOKEN_IN_FOR_EXACT_BPT_OUT){
+            emit SwapFeePercentageChanged(getSwapFeePercentage(userData, OperationType.JOIN));
+        }
+
         _afterJoinExit(
             preJoinExitInvariant,
             balances,
@@ -280,7 +289,7 @@ abstract contract BaseWeightedPool is BaseMinimalSwapInfoPool {
             normalizedWeights,
             amountsIn,
             totalSupply,
-            getSwapFeePercentage()
+            getSwapFeePercentage(userData, OperationType.JOIN)
         );
 
         _require(bptAmountOut >= minBPTAmountOut, Errors.BPT_OUT_MIN_AMOUNT);
@@ -304,7 +313,7 @@ abstract contract BaseWeightedPool is BaseMinimalSwapInfoPool {
             normalizedWeights[tokenIndex],
             bptAmountOut,
             totalSupply,
-            getSwapFeePercentage()
+            getSwapFeePercentage(userData, OperationType.JOIN)
         );
 
         // We join in a single token, so we initialize amountsIn with zeros
@@ -352,6 +361,15 @@ abstract contract BaseWeightedPool is BaseMinimalSwapInfoPool {
             preJoinExitSupply,
             userData
         );
+
+        // _doExit performs actions specific to type of exit
+        // but it's a view function so can not emit event
+
+        WeightedPoolUserData.ExitKind kind = userData.exitKind();
+        if(kind == WeightedPoolUserData.ExitKind.EXACT_BPT_IN_FOR_ONE_TOKEN_OUT ||
+         kind ==  WeightedPoolUserData.ExitKind.BPT_IN_FOR_EXACT_TOKENS_OUT){
+            emit SwapFeePercentageChanged(getSwapFeePercentage(userData, OperationType.EXIT));
+        }
 
         _afterJoinExit(
             preJoinExitInvariant,
@@ -407,7 +425,7 @@ abstract contract BaseWeightedPool is BaseMinimalSwapInfoPool {
             normalizedWeights[tokenIndex],
             bptAmountIn,
             totalSupply,
-            getSwapFeePercentage()
+            getSwapFeePercentage(userData, OperationType.EXIT)
         );
 
         // This is an exceptional situation in which the fee is charged on a token out instead of a token in.
@@ -448,7 +466,7 @@ abstract contract BaseWeightedPool is BaseMinimalSwapInfoPool {
             normalizedWeights,
             amountsOut,
             totalSupply,
-            getSwapFeePercentage()
+            getSwapFeePercentage(userData, OperationType.EXIT)
         );
         _require(bptAmountIn <= maxBPTAmountIn, Errors.BPT_IN_MAX_AMOUNT);
 
